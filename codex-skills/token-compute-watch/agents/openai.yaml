@@ -1,0 +1,4 @@
+interface:
+  display_name: "Token 算力链监控"
+  short_description: "抓取 A/H 股行情并生成可追溯的盘中风险监控报告"
+  default_prompt: "使用 $token-compute-watch 运行一次 Token 算力链盘中监控并报告数据质量、风险收益与观察信号。"

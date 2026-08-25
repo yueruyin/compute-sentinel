@@ -1,0 +1,19 @@
+{
+  "description": "Token算力链可配置关注池；由原 hermes-stock-watchers 的实际运行配置迁移",
+  "stocks": [
+    {"code": "09988", "name": "阿里巴巴", "market": "hk", "sector": "云厂商", "role": "核心"},
+    {"code": "00700", "name": "腾讯控股", "market": "hk", "sector": "云厂商", "role": "核心"},
+    {"code": "02513", "name": "智谱AI", "market": "hk", "sector": "大模型", "role": "核心"},
+    {"code": "00100", "name": "MiniMax", "market": "hk", "sector": "大模型", "role": "弹性"},
+    {"code": "300308", "name": "中际旭创", "market": "a", "sector": "光模块", "role": "核心"},
+    {"code": "300502", "name": "新易盛", "market": "a", "sector": "光模块", "role": "核心"},
+    {"code": "688256", "name": "寒武纪", "market": "a", "sector": "AI芯片", "role": "弹性"},
+    {"code": "600584", "name": "长电科技", "market": "a", "sector": "先进封装", "role": "核心"},
+    {"code": "603986", "name": "兆易创新", "market": "a", "sector": "存储芯片", "role": "核心"},
+    {"code": "688825", "name": "长鑫科技", "market": "a", "sector": "存储芯片", "role": "核心"},
+    {"code": "301308", "name": "江波龙", "market": "a", "sector": "存储芯片", "role": "弹性"},
+    {"code": "300394", "name": "天孚通信", "market": "a", "sector": "光通信", "role": "风向标"},
+    {"code": "002463", "name": "沪电股份", "market": "a", "sector": "PCB", "role": "风向标"},
+    {"code": "06656", "name": "思格新能", "market": "hk", "sector": "AI储能", "role": "风向标"}
+  ]
+}
