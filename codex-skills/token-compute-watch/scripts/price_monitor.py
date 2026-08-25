@@ -22,6 +22,7 @@ CST = timezone(timedelta(hours=8))
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_WATCHLIST = SCRIPT_DIR.parent / "references" / "watchlist.json"
 USER_AGENT = "Mozilla/5.0 (compatible; CodexTokenComputeWatch/1.0)"
+KLINE_DAYS = 60
 SECTOR_GROUP_ALIASES = {
     "光模块": "光模块/光通信",
     "光通信": "光模块/光通信",
@@ -281,14 +282,19 @@ def fetch_a_klines(code: str, days: int, timeout: float) -> list[dict[str, Any]]
     if not isinstance(rows, list):
         raise FetchError(f"东方财富K线:{code}", "无K线数据")
     result: list[dict[str, Any]] = []
-    for row in rows:
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, str):
+            raise FetchError(f"东方财富K线:{code}", f"第{index}根K线格式异常")
         parts = row.split(",")
         if len(parts) < 5:
-            continue
-        result.append({
-            "date": parts[0], "open": float(parts[1]), "close": float(parts[2]),
-            "high": float(parts[3]), "low": float(parts[4]),
-        })
+            raise FetchError(f"东方财富K线:{code}", f"第{index}根K线缺少必需价格字段")
+        try:
+            result.append({
+                "date": parts[0], "open": float(parts[1]), "close": float(parts[2]),
+                "high": float(parts[3]), "low": float(parts[4]),
+            })
+        except (TypeError, ValueError) as exc:
+            raise FetchError(f"东方财富K线:{code}", f"第{index}根K线价格非数值") from exc
     return result
 
 
@@ -300,13 +306,16 @@ def fetch_hk_klines(code: str, days: int, timeout: float) -> list[dict[str, Any]
     market_data = (data.get("data") or {}).get(f"hk{code}") or {}
     rows = market_data.get("day") or market_data.get("qfqday") or []
     result: list[dict[str, Any]] = []
-    for row in rows:
-        if len(row) < 5:
-            continue
-        result.append({
-            "date": row[0], "open": float(row[1]), "close": float(row[2]),
-            "high": float(row[3]), "low": float(row[4]),
-        })
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, (list, tuple)) or len(row) < 5:
+            raise FetchError(f"腾讯港股K线:{code}", f"第{index}根K线缺少必需价格字段")
+        try:
+            result.append({
+                "date": row[0], "open": float(row[1]), "close": float(row[2]),
+                "high": float(row[3]), "low": float(row[4]),
+            })
+        except (TypeError, ValueError) as exc:
+            raise FetchError(f"腾讯港股K线:{code}", f"第{index}根K线价格非数值") from exc
     if not result:
         raise FetchError(f"腾讯港股K线:{code}", "无K线数据")
     return result
@@ -316,12 +325,47 @@ def mean(values: list[float]) -> float:
     return sum(values) / len(values)
 
 
+def normalize_klines(klines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate daily bars and return a copy ordered by trading date."""
+    normalized: list[tuple[datetime, dict[str, Any]]] = []
+    seen_dates: set[str] = set()
+    for index, row in enumerate(klines, start=1):
+        if not isinstance(row, dict):
+            raise ValueError(f"第{index}根K线不是对象")
+        raw_date = row.get("date")
+        try:
+            parsed_date = datetime.strptime(str(raw_date), "%Y-%m-%d")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"第{index}根K线日期不可解析: {raw_date!r}") from exc
+        date_text = parsed_date.date().isoformat()
+        if date_text in seen_dates:
+            raise ValueError(f"K线日期重复: {date_text}")
+        seen_dates.add(date_text)
+
+        clean_row = {**row, "date": date_text}
+        for field in ("close", "high", "low"):
+            if field not in row:
+                raise ValueError(f"第{index}根K线缺少必需字段: {field}")
+            try:
+                value = float(row[field])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"第{index}根K线字段{field}非数值: {row[field]!r}") from exc
+            if not math.isfinite(value):
+                raise ValueError(f"第{index}根K线字段{field}不是有限数值: {row[field]!r}")
+            clean_row[field] = value
+        normalized.append((parsed_date, clean_row))
+    normalized.sort(key=lambda item: item[0])
+    return [row for _, row in normalized]
+
+
 def compute_metrics(klines: list[dict[str, Any]], price: float) -> dict[str, Any]:
+    klines = normalize_klines(klines)
     if len(klines) < 21:
         raise ValueError(f"K线不足21根，实际{len(klines)}根")
     closes = [float(row["close"]) for row in klines]
     ma10 = mean(closes[-10:])
     ma20 = mean(closes[-20:])
+    ma60 = mean(closes[-60:]) if len(closes) >= 60 else None
     true_ranges: list[float] = []
     for previous, current in zip(klines[:-1], klines[1:]):
         true_ranges.append(max(
@@ -344,6 +388,7 @@ def compute_metrics(klines: list[dict[str, Any]], price: float) -> dict[str, Any
     return {
         "ma10": round(ma10, 2),
         "ma20": round(ma20, 2),
+        "ma60": round(ma60, 2) if ma60 is not None else None,
         "atr14": round(atr14, 2),
         "reference_zone": [round(reference_low, 2), round(reference_high, 2)],
         "support_zone": [round(support_low, 2), round(support_high, 2)],
@@ -513,7 +558,7 @@ def run_monitor(watchlist_path: Path, timeout: float) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for stock in stocks:
         quote = (a_quotes if stock["market"] == "a" else hk_quotes).get(stock["code"])
-        entry: dict[str, Any] = {**stock}
+        entry: dict[str, Any] = {**stock, "ma60": None}
         if not quote or not isinstance(quote.get("price"), (int, float)):
             entry.update({
                 "quote_status": "missing", "metrics_status": "skipped",
@@ -526,9 +571,9 @@ def run_monitor(watchlist_path: Path, timeout: float) -> dict[str, Any]:
         entry["quote_status"] = quote_freshness(quote.get("quote_time"), generated_at)
         try:
             klines = (
-                fetch_a_klines(stock["code"], 35, timeout)
+                fetch_a_klines(stock["code"], KLINE_DAYS, timeout)
                 if stock["market"] == "a"
-                else fetch_hk_klines(stock["code"], 35, timeout)
+                else fetch_hk_klines(stock["code"], KLINE_DAYS, timeout)
             )
             metrics = compute_metrics(klines, float(quote["price"]))
             signal, signal_text = classify(metrics, float(quote["price"]))
@@ -616,7 +661,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## 标的明细",
         "",
-        "| 板块 | 市场 | 角色 | 标的 | 现价 | 涨跌% | 行情时间 | MA10/MA20 | 参考区 | 止损参考 | 目标1 | 盈亏比 | 信号 |",
+        "| 板块 | 市场 | 角色 | 标的 | 现价 | 涨跌% | 行情时间 | MA10/MA20/MA60 | 参考区 | 止损参考 | 目标1 | 盈亏比 | 信号 |",
         "|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---|",
     ])
     for result in report["results"]:
@@ -624,7 +669,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         sector = SECTOR_GROUP_ALIASES.get(result["sector"], result["sector"])
         zone = result.get("reference_zone") or []
         zone_text = f"{fmt_num(zone[0])}-{fmt_num(zone[1])}" if len(zone) == 2 else "—"
-        ma_text = f"{fmt_num(result.get('ma10'))}/{fmt_num(result.get('ma20'))}"
+        ma60_text = fmt_num(result.get("ma60"))
+        if result.get("metrics_status") == "ok" and result.get("ma60") is None:
+            ma60_text = "—（历史不足60根）"
+        ma_text = (
+            f"{fmt_num(result.get('ma10'))}/{fmt_num(result.get('ma20'))}/{ma60_text}"
+        )
         lines.append(
             f"| {sector} | {market} | {result['role']} | {result['code']} {result['name']} | "
             f"{fmt_num(result.get('price'))} | {fmt_num(result.get('change_pct'))} | "
