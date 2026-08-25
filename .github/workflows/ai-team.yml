@@ -25,6 +25,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Validate OpenAI API key
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::缺少 Repository Secret: OPENAI_API_KEY。请进入 Settings -> Secrets and variables -> Actions -> Repository secrets 添加后重新运行。"
+            exit 1
+          fi
+          echo "OPENAI_API_KEY secret is configured."
+
       - name: Prepare workspace
         env:
           TASK: ${{ inputs.task }}
