@@ -1,0 +1,317 @@
+name: AI Development Team
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "请输入本次开发需求"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-development-team-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  stock-expert:
+    name: "01 股票专家"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Prepare workspace
+        env:
+          TASK: ${{ inputs.task }}
+        run: |
+          mkdir -p .ai-workflow
+          cp .github/agents/stock-expert.md .ai-workflow/stock-expert-prompt.md
+          printf '\n\n# 当前用户需求\n%s\n' "$TASK" >> .ai-workflow/stock-expert-prompt.md
+
+      - name: Run stock expert
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":read-only"
+          prompt-file: .ai-workflow/stock-expert-prompt.md
+          output-file: .ai-workflow/stock-expert-report.md
+
+      - name: Upload stock expert report
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-expert
+          path: .ai-workflow/stock-expert-report.md
+          retention-days: 7
+
+  product-manager:
+    name: "02 产品经理"
+    needs: stock-expert
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Download stock expert report
+        uses: actions/download-artifact@v4
+        with:
+          name: stock-expert
+          path: .ai-workflow
+
+      - name: Prepare product prompt
+        env:
+          TASK: ${{ inputs.task }}
+        run: |
+          cp .github/agents/product-manager.md .ai-workflow/product-manager-prompt.md
+          printf '\n\n# 用户原始需求\n%s\n' "$TASK" >> .ai-workflow/product-manager-prompt.md
+          printf '\n\n# 股票专家报告\n' >> .ai-workflow/product-manager-prompt.md
+          cat .ai-workflow/stock-expert-report.md >> .ai-workflow/product-manager-prompt.md
+
+      - name: Run product manager
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":read-only"
+          prompt-file: .ai-workflow/product-manager-prompt.md
+          output-file: .ai-workflow/product-requirement.md
+
+      - name: Upload product requirement
+        uses: actions/upload-artifact@v4
+        with:
+          name: product-requirement
+          path: .ai-workflow/product-requirement.md
+          retention-days: 7
+
+  developer:
+    name: "03 开发"
+    needs: product-manager
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Download stock expert report
+        uses: actions/download-artifact@v4
+        with:
+          name: stock-expert
+          path: .ai-workflow
+
+      - name: Download product requirement
+        uses: actions/download-artifact@v4
+        with:
+          name: product-requirement
+          path: .ai-workflow
+
+      - name: Exclude workflow scratch files from diff
+        run: echo ".ai-workflow/" >> .git/info/exclude
+
+      - name: Prepare developer prompt
+        env:
+          TASK: ${{ inputs.task }}
+        run: |
+          cp .github/agents/developer.md .ai-workflow/developer-prompt.md
+          printf '\n\n# 用户原始需求\n%s\n' "$TASK" >> .ai-workflow/developer-prompt.md
+          printf '\n\n# 股票专家报告\n' >> .ai-workflow/developer-prompt.md
+          cat .ai-workflow/stock-expert-report.md >> .ai-workflow/developer-prompt.md
+          printf '\n\n# 产品需求\n' >> .ai-workflow/developer-prompt.md
+          cat .ai-workflow/product-requirement.md >> .ai-workflow/developer-prompt.md
+
+      - name: Run developer
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":workspace"
+          prompt-file: .ai-workflow/developer-prompt.md
+          output-file: .ai-workflow/developer-report.md
+
+      - name: Build review patch
+        run: |
+          git add -N .
+          git diff --binary > .ai-workflow/change.patch
+          git diff --stat > .ai-workflow/change-stat.txt
+
+      - name: Upload development result
+        uses: actions/upload-artifact@v4
+        with:
+          name: development
+          path: |
+            .ai-workflow/change.patch
+            .ai-workflow/change-stat.txt
+            .ai-workflow/developer-report.md
+          retention-days: 7
+
+  test:
+    name: "04 测试"
+    needs: developer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Download stock expert report
+        uses: actions/download-artifact@v4
+        with:
+          name: stock-expert
+          path: .ai-workflow
+
+      - name: Download product requirement
+        uses: actions/download-artifact@v4
+        with:
+          name: product-requirement
+          path: .ai-workflow
+
+      - name: Download development result
+        uses: actions/download-artifact@v4
+        with:
+          name: development
+          path: .ai-workflow
+
+      - name: Apply developer patch
+        run: |
+          echo ".ai-workflow/" >> .git/info/exclude
+          if [ -s .ai-workflow/change.patch ]; then
+            git apply --check .ai-workflow/change.patch
+            git apply .ai-workflow/change.patch
+          fi
+          git add -N .
+
+      - name: Run unit tests
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          python3 -m unittest codex-skills/token-compute-watch/scripts/test_price_monitor.py \
+            2>&1 | tee .ai-workflow/test-result.txt
+          status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > .ai-workflow/test-exit-code.txt
+          exit 0
+
+      - name: Prepare QA prompt
+        env:
+          TASK: ${{ inputs.task }}
+        run: |
+          cp .github/agents/tester.md .ai-workflow/tester-prompt.md
+          printf '\n\n# 用户原始需求\n%s\n' "$TASK" >> .ai-workflow/tester-prompt.md
+          printf '\n\n# 股票专家报告\n' >> .ai-workflow/tester-prompt.md
+          cat .ai-workflow/stock-expert-report.md >> .ai-workflow/tester-prompt.md
+          printf '\n\n# 产品需求\n' >> .ai-workflow/tester-prompt.md
+          cat .ai-workflow/product-requirement.md >> .ai-workflow/tester-prompt.md
+          printf '\n\n# Developer 报告\n' >> .ai-workflow/tester-prompt.md
+          cat .ai-workflow/developer-report.md >> .ai-workflow/tester-prompt.md
+          printf '\n\n# unittest 退出码\n' >> .ai-workflow/tester-prompt.md
+          cat .ai-workflow/test-exit-code.txt >> .ai-workflow/tester-prompt.md
+          printf '\n\n# unittest 输出\n' >> .ai-workflow/tester-prompt.md
+          cat .ai-workflow/test-result.txt >> .ai-workflow/tester-prompt.md
+
+      - name: Run AI tester
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":read-only"
+          prompt-file: .ai-workflow/tester-prompt.md
+          output-file: .ai-workflow/test-report.md
+
+      - name: Upload test result
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: |
+            .ai-workflow/test-result.txt
+            .ai-workflow/test-exit-code.txt
+            .ai-workflow/test-report.md
+          retention-days: 7
+
+  acceptance:
+    name: "05 验收"
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Download stock expert report
+        uses: actions/download-artifact@v4
+        with:
+          name: stock-expert
+          path: .ai-workflow
+
+      - name: Download product requirement
+        uses: actions/download-artifact@v4
+        with:
+          name: product-requirement
+          path: .ai-workflow
+
+      - name: Download development result
+        uses: actions/download-artifact@v4
+        with:
+          name: development
+          path: .ai-workflow
+
+      - name: Download test report
+        uses: actions/download-artifact@v4
+        with:
+          name: test-report
+          path: .ai-workflow
+
+      - name: Apply developer patch
+        run: |
+          echo ".ai-workflow/" >> .git/info/exclude
+          if [ -s .ai-workflow/change.patch ]; then
+            git apply --check .ai-workflow/change.patch
+            git apply .ai-workflow/change.patch
+          fi
+          git add -N .
+
+      - name: Prepare acceptance prompt
+        env:
+          TASK: ${{ inputs.task }}
+        run: |
+          cp .github/agents/acceptance.md .ai-workflow/acceptance-prompt.md
+          printf '\n\n# 用户原始需求\n%s\n' "$TASK" >> .ai-workflow/acceptance-prompt.md
+          printf '\n\n# 股票专家报告\n' >> .ai-workflow/acceptance-prompt.md
+          cat .ai-workflow/stock-expert-report.md >> .ai-workflow/acceptance-prompt.md
+          printf '\n\n# 产品需求\n' >> .ai-workflow/acceptance-prompt.md
+          cat .ai-workflow/product-requirement.md >> .ai-workflow/acceptance-prompt.md
+          printf '\n\n# Developer 报告\n' >> .ai-workflow/acceptance-prompt.md
+          cat .ai-workflow/developer-report.md >> .ai-workflow/acceptance-prompt.md
+          printf '\n\n# unittest 退出码\n' >> .ai-workflow/acceptance-prompt.md
+          cat .ai-workflow/test-exit-code.txt >> .ai-workflow/acceptance-prompt.md
+          printf '\n\n# unittest 输出\n' >> .ai-workflow/acceptance-prompt.md
+          cat .ai-workflow/test-result.txt >> .ai-workflow/acceptance-prompt.md
+          printf '\n\n# QA 测试报告\n' >> .ai-workflow/acceptance-prompt.md
+          cat .ai-workflow/test-report.md >> .ai-workflow/acceptance-prompt.md
+          printf '\n\n# Git Diff\n' >> .ai-workflow/acceptance-prompt.md
+          git diff -- . ':!.ai-workflow' >> .ai-workflow/acceptance-prompt.md
+
+      - name: Run acceptance
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":read-only"
+          prompt-file: .ai-workflow/acceptance-prompt.md
+          output-file: .ai-workflow/acceptance-report.md
+
+      - name: Publish acceptance summary
+        run: cat .ai-workflow/acceptance-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload final result
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-result
+          path: |
+            .ai-workflow/acceptance-report.md
+            .ai-workflow/change.patch
+            .ai-workflow/change-stat.txt
+          retention-days: 7
