@@ -18,22 +18,12 @@ concurrency:
 jobs:
   stock-expert:
     name: "01 股票专家"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           persist-credentials: false
-
-      - name: Validate OpenAI API key
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "::error::缺少 Repository Secret: OPENAI_API_KEY。请进入 Settings -> Secrets and variables -> Actions -> Repository secrets 添加后重新运行。"
-            exit 1
-          fi
-          echo "OPENAI_API_KEY secret is configured."
 
       - name: Prepare workspace
         env:
@@ -43,13 +33,12 @@ jobs:
           cp .github/agents/stock-expert.md .ai-workflow/stock-expert-prompt.md
           printf '\n\n# 当前用户需求\n%s\n' "$TASK" >> .ai-workflow/stock-expert-prompt.md
 
-      - name: Run stock expert
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          permission-profile: ":read-only"
-          prompt-file: .ai-workflow/stock-expert-prompt.md
-          output-file: .ai-workflow/stock-expert-report.md
+      - name: Run stock expert with local Codex
+        run: |
+          bash .github/scripts/run-local-codex.sh \
+            read-only \
+            .ai-workflow/stock-expert-prompt.md \
+            .ai-workflow/stock-expert-report.md
 
       - name: Upload stock expert report
         uses: actions/upload-artifact@v4
@@ -61,7 +50,7 @@ jobs:
   product-manager:
     name: "02 产品经理"
     needs: stock-expert
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -83,13 +72,12 @@ jobs:
           printf '\n\n# 股票专家报告\n' >> .ai-workflow/product-manager-prompt.md
           cat .ai-workflow/stock-expert-report.md >> .ai-workflow/product-manager-prompt.md
 
-      - name: Run product manager
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          permission-profile: ":read-only"
-          prompt-file: .ai-workflow/product-manager-prompt.md
-          output-file: .ai-workflow/product-requirement.md
+      - name: Run product manager with local Codex
+        run: |
+          bash .github/scripts/run-local-codex.sh \
+            read-only \
+            .ai-workflow/product-manager-prompt.md \
+            .ai-workflow/product-requirement.md
 
       - name: Upload product requirement
         uses: actions/upload-artifact@v4
@@ -101,7 +89,7 @@ jobs:
   developer:
     name: "03 开发"
     needs: product-manager
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -134,13 +122,12 @@ jobs:
           printf '\n\n# 产品需求\n' >> .ai-workflow/developer-prompt.md
           cat .ai-workflow/product-requirement.md >> .ai-workflow/developer-prompt.md
 
-      - name: Run developer
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          permission-profile: ":workspace"
-          prompt-file: .ai-workflow/developer-prompt.md
-          output-file: .ai-workflow/developer-report.md
+      - name: Run developer with local Codex
+        run: |
+          bash .github/scripts/run-local-codex.sh \
+            workspace-write \
+            .ai-workflow/developer-prompt.md \
+            .ai-workflow/developer-report.md
 
       - name: Build review patch
         run: |
@@ -161,7 +148,7 @@ jobs:
   test:
     name: "04 测试"
     needs: developer
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -223,13 +210,12 @@ jobs:
           printf '\n\n# unittest 输出\n' >> .ai-workflow/tester-prompt.md
           cat .ai-workflow/test-result.txt >> .ai-workflow/tester-prompt.md
 
-      - name: Run AI tester
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          permission-profile: ":read-only"
-          prompt-file: .ai-workflow/tester-prompt.md
-          output-file: .ai-workflow/test-report.md
+      - name: Run AI tester with local Codex
+        run: |
+          bash .github/scripts/run-local-codex.sh \
+            read-only \
+            .ai-workflow/tester-prompt.md \
+            .ai-workflow/test-report.md
 
       - name: Upload test result
         uses: actions/upload-artifact@v4
@@ -244,7 +230,7 @@ jobs:
   acceptance:
     name: "05 验收"
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -305,13 +291,12 @@ jobs:
           printf '\n\n# Git Diff\n' >> .ai-workflow/acceptance-prompt.md
           git diff -- . ':!.ai-workflow' >> .ai-workflow/acceptance-prompt.md
 
-      - name: Run acceptance
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          permission-profile: ":read-only"
-          prompt-file: .ai-workflow/acceptance-prompt.md
-          output-file: .ai-workflow/acceptance-report.md
+      - name: Run acceptance with local Codex
+        run: |
+          bash .github/scripts/run-local-codex.sh \
+            read-only \
+            .ai-workflow/acceptance-prompt.md \
+            .ai-workflow/acceptance-report.md
 
       - name: Publish acceptance summary
         run: cat .ai-workflow/acceptance-report.md >> "$GITHUB_STEP_SUMMARY"
